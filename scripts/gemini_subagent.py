@@ -28,6 +28,71 @@ TIER_MODELS: dict[str, str] = {
     "frontier": "gemini-4-argon",
 }
 
+IMAGE_TIER_MODELS: dict[str, str] = {
+    "lite": "gemini-3.1-flash-lite-image",
+    "default": "gemini-nano-banana-2.1",
+    "pro": "gemini-3-pro-image",
+}
+
+GEMINI_APP_DEEPLINKS: dict[str, str] = {
+    "newchat": "googlegemini://newchat",
+    "videos": "googlegemini://?target=videos",
+    "images": "googlegemini://?target=images",
+    "library": "googlegemini://?target=library",
+    "customize": "googlegemini://?target=customize",
+    "scheduled": "googlegemini://?target=scheduled",
+    "your_day": "googlegemini://?target=your_day",
+    "needsattention": "googlegemini://needsattention?ext_src=app_shortcut",
+}
+
+IMAGE_STYLE_PRESETS: dict[str, dict[str, Any]] = {
+    "none": {
+        "aspect_ratio": None,
+        "size": "2K",
+        "prefix": "",
+    },
+    "knowledge-card": {
+        "aspect_ratio": "3:4",
+        "size": "2K",
+        "prefix": (
+            "Design a crisp vertical 3:4 editorial Chinese technical knowledge infographic card "
+            "on a warm ivory off-white background (#FCFBF9), clean flat vector graphic design, "
+            "generous breathing margins, zero 3D clutter, and zero watermarks.\n"
+            "Layout specification:\n"
+            "1. Header: Top-right soft blush-pink pill badge (#FCE8EC) with bold crimson category text (#D92B4B). "
+            "Large bold dark-charcoal 1-2 line main title (#141414). Below it, a medium-bold crimson subtitle (#D92B4B).\n"
+            "2. Body: Stacked full-width horizontal rounded cards (14px corner radius, crisp white fill, light tinted border). "
+            "Each row card contains: (a) a solid colored left vertical spine with a large bold white step number "
+            "(1 crimson #E62E5C, 2 purple #7339D8, 3 cobalt blue #2D6AE3, 4 amber orange #EA7626, 5 emerald green #269C5E), "
+            "(b) a matching soft-pastel rounded-square flat vector icon tile on the left, and "
+            "(c) a right content column with a bold colored heading, a dashed-border tinted pill bar for key tags/commands, "
+            "and 1-2 lines of legible dark-gray Simplified Chinese explanation (#333333).\n"
+            "3. Footer: Full-width rounded soft-rose summary callout box (#FDF0F2) with a thin rose border, "
+            "a red bullseye target icon on the left, and a concise takeaway sentence highlighting keywords in bold crimson.\n"
+            "If reference image(s) are attached, strictly match their visual hierarchy, card spines, dashed tag pills, "
+            "typography weight, and color palette while replacing 100% of the text and icons with the new topic below. "
+            "Render every Simplified Chinese character and English term crisply without typos."
+        ),
+    },
+    "arch-diagram": {
+        "aspect_ratio": "16:9",
+        "size": "2K",
+        "prefix": (
+            "Create a clean light-theme modern software architecture diagram on a crisp #FAFBFD background. "
+            "Use structured rounded module boxes, color-coded architectural layers, clean directional arrows, "
+            "high-contrast legible sans-serif labels, and zero decorative neon or sci-fi clutter."
+        ),
+    },
+    "cover-poster": {
+        "aspect_ratio": "16:9",
+        "size": "2K",
+        "prefix": (
+            "Create a high-contrast modern editorial 16:9 cover graphic with clean focal composition, "
+            "crisp bold user-facing headline typography, generous margins, and zero watermarks or developer spec badges."
+        ),
+    },
+}
+
 TERMINAL_AGENT_STATUSES = {
     "completed",
     "failed",
@@ -1153,6 +1218,289 @@ def cmd_agy_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def build_media_billing_hint(err_msg: str, media_kind: str) -> str:
+    if "Free Tier" not in err_msg and "limit: 0" not in err_msg:
+        return ""
+    target = "images" if media_kind == "image" else "videos"
+    return (
+        f"Current gemini-api key has 0 Free Tier quota for {media_kind} models. "
+        "Either (a) attach your Google Developer Program ($40/$100 monthly credit) Billing Account "
+        "to this AI Studio project, or (b) route at $0 via Antigravity's native subagent or "
+        f"`gemini-subagent handoff --target {target} --copy --open` (Gemini.app)."
+    )
+
+
+def cmd_image(args: argparse.Namespace) -> int:
+    """Generate or iteratively edit images via gemini-api image with optional style presets."""
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    gemini_bin = require_gemini_bin(resolve_binary("GEMINI_API_BIN", "gemini-api"))
+    env, _ = build_env(gemini_bin)
+    verify_storage(cfg, state_dir, create_dirs=True)
+
+    run_id = make_run_id("image-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    preset = IMAGE_STYLE_PRESETS[args.style]
+    model = args.model if args.model else IMAGE_TIER_MODELS[args.tier]
+    aspect_ratio = args.aspect_ratio if args.aspect_ratio else preset["aspect_ratio"]
+    image_size = args.size if args.size else preset["size"]
+    final_prompt = f"{preset['prefix']}\n\nContent to visualize:\n{args.prompt}" if preset["prefix"] else args.prompt
+
+    prepared = prepare_inputs(gemini_bin, args.file or [], env)
+    target_out = run_dir / "image.png"
+
+    cli_args: list[str] = [
+        "image",
+        final_prompt,
+        "-m",
+        model,
+        "--image-size",
+        image_size,
+        "--out",
+        str(target_out),
+        "-o",
+        "json",
+    ]
+    if aspect_ratio:
+        cli_args.extend(["--aspect-ratio", aspect_ratio])
+    for item in prepared:
+        cli_args.extend(["-i", item["api_input"]])
+    if args.continue_id:
+        cli_args.extend(["--previous-interaction-id", args.continue_id])
+
+    rc, resp, raw_out, raw_err = run_gemini_json(gemini_bin, cli_args, env, stdin_text=None, timeout=600)
+    receipt_path = run_dir / "receipt.json"
+
+    if rc != 0:
+        err_msg = raw_err.strip() or raw_out.strip() or f"gemini-api image exited with {rc}"
+        billing_hint = build_media_billing_hint(err_msg, "image")
+        receipt = {
+            "kind": "image",
+            "run_id": run_id,
+            "created_at": utc_now_iso(),
+            "style": args.style,
+            "model": model,
+            "aspect_ratio": aspect_ratio or "",
+            "image_size": image_size,
+            "status": "error",
+            "returncode": rc,
+            "attached_files": prepared,
+            "run_dir": str(run_dir),
+            "error": err_msg,
+        }
+        if billing_hint:
+            receipt["billing_hint"] = billing_hint
+        write_json_file(receipt_path, receipt)
+        if args.json:
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        else:
+            print(f"[gemini-subagent] ERROR (exit {rc}): {err_msg}", file=sys.stderr)
+            if billing_hint:
+                print(f"[gemini-subagent] HINT: {billing_hint}", file=sys.stderr)
+        return rc
+
+    resp_dict = resp or {}
+    raw_path_str = resp_dict.get("path") or (raw_out.strip().splitlines()[-1].strip() if raw_out.strip() else str(target_out))
+    actual_path = Path(raw_path_str).expanduser().resolve()
+    if not actual_path.is_file() and target_out.is_file():
+        actual_path = target_out.resolve()
+
+    copied_out_file = ""
+    if args.out and actual_path.is_file():
+        out_dest = Path(args.out).expanduser().resolve()
+        out_dest.parent.mkdir(parents=True, exist_ok=True)
+        if actual_path != out_dest:
+            shutil.copy2(actual_path, out_dest)
+        copied_out_file = str(out_dest)
+
+    response_id = resp_dict.get("response_id") or resp_dict.get("id") or ""
+    receipt = {
+        "kind": "image",
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "style": args.style,
+        "model": model,
+        "aspect_ratio": aspect_ratio or "",
+        "image_size": image_size,
+        "status": resp_dict.get("status", "completed" if actual_path.is_file() else "unknown"),
+        "returncode": rc,
+        "response_id": response_id,
+        "mime_type": resp_dict.get("mime_type", ""),
+        "size_bytes": resp_dict.get("size_bytes", actual_path.stat().st_size if actual_path.is_file() else 0),
+        "image_path": str(actual_path) if actual_path.is_file() else "",
+        "copied_out_file": copied_out_file,
+        "attached_files": prepared,
+        "run_dir": str(run_dir),
+    }
+    write_json_file(receipt_path, receipt)
+
+    final_path_str = copied_out_file or str(actual_path)
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        print(final_path_str)
+        print(
+            f"[gemini-subagent] model={model} style={args.style} response_id={response_id} path={final_path_str}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def cmd_video(args: argparse.Namespace) -> int:
+    """Generate or resume videos via gemini-api video (gemini-omni-1.2-flash)."""
+    if not args.prompt and not args.resume:
+        raise RuntimeError("Either <prompt> or --resume must be provided.")
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    gemini_bin = require_gemini_bin(resolve_binary("GEMINI_API_BIN", "gemini-api"))
+    env, _ = build_env(gemini_bin)
+    verify_storage(cfg, state_dir, create_dirs=True)
+
+    run_id = make_run_id("video-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    prepared = prepare_inputs(gemini_bin, args.file or [], env)
+    target_out = run_dir / "video.mp4"
+
+    cli_args: list[str] = ["video"]
+    if args.prompt:
+        cli_args.append(args.prompt)
+    cli_args.extend(["-m", args.model, "--resolution", args.resolution, "-o", "json"])
+    if args.aspect_ratio:
+        cli_args.extend(["--aspect-ratio", args.aspect_ratio])
+    for item in prepared:
+        cli_args.extend(["-i", item["api_input"]])
+    if args.continue_id:
+        cli_args.extend(["--previous-interaction-id", args.continue_id])
+    if args.resume:
+        cli_args.extend(["--resume", args.resume])
+    if args.async_run:
+        cli_args.append("--async")
+    else:
+        cli_args.extend(["--out", str(target_out)])
+
+    rc, resp, raw_out, raw_err = run_gemini_json(gemini_bin, cli_args, env, stdin_text=None, timeout=1200)
+    receipt_path = run_dir / "receipt.json"
+
+    if rc != 0:
+        err_msg = raw_err.strip() or raw_out.strip() or f"gemini-api video exited with {rc}"
+        billing_hint = build_media_billing_hint(err_msg, "video")
+        receipt = {
+            "kind": "video",
+            "run_id": run_id,
+            "created_at": utc_now_iso(),
+            "model": args.model,
+            "resolution": args.resolution,
+            "aspect_ratio": args.aspect_ratio or "",
+            "status": "error",
+            "returncode": rc,
+            "attached_files": prepared,
+            "run_dir": str(run_dir),
+            "error": err_msg,
+        }
+        if billing_hint:
+            receipt["billing_hint"] = billing_hint
+        write_json_file(receipt_path, receipt)
+        if args.json:
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        else:
+            print(f"[gemini-subagent] ERROR (exit {rc}): {err_msg}", file=sys.stderr)
+            if billing_hint:
+                print(f"[gemini-subagent] HINT: {billing_hint}", file=sys.stderr)
+        return rc
+
+    resp_dict = resp or {}
+    if args.async_run:
+        op_id = resp_dict.get("response_id") or resp_dict.get("id") or (raw_out.strip().splitlines()[-1].strip() if raw_out.strip() else "")
+        receipt = {
+            "kind": "video",
+            "run_id": run_id,
+            "created_at": utc_now_iso(),
+            "model": args.model,
+            "resolution": args.resolution,
+            "aspect_ratio": args.aspect_ratio or "",
+            "status": resp_dict.get("status", "in_progress"),
+            "response_id": op_id,
+            "attached_files": prepared,
+            "run_dir": str(run_dir),
+            "resume_command": f"gemini-subagent video --resume {op_id}",
+        }
+        write_json_file(receipt_path, receipt)
+        if args.json:
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        else:
+            print(f"run_id: {run_id}")
+            print(f"operation_id: {op_id}")
+            print(f"resume: gemini-subagent video --resume {op_id}")
+        return 0
+
+    raw_path_str = resp_dict.get("path") or (raw_out.strip().splitlines()[-1].strip() if raw_out.strip() else str(target_out))
+    actual_path = Path(raw_path_str).expanduser().resolve()
+    if not actual_path.is_file() and target_out.is_file():
+        actual_path = target_out.resolve()
+
+    copied_out_file = ""
+    if args.out and actual_path.is_file():
+        out_dest = Path(args.out).expanduser().resolve()
+        out_dest.parent.mkdir(parents=True, exist_ok=True)
+        if actual_path != out_dest:
+            shutil.copy2(actual_path, out_dest)
+        copied_out_file = str(out_dest)
+
+    response_id = resp_dict.get("response_id") or resp_dict.get("id") or ""
+    receipt = {
+        "kind": "video",
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "model": args.model,
+        "resolution": args.resolution,
+        "aspect_ratio": args.aspect_ratio or "",
+        "status": resp_dict.get("status", "completed" if actual_path.is_file() else "unknown"),
+        "returncode": rc,
+        "response_id": response_id,
+        "mime_type": resp_dict.get("mime_type", ""),
+        "size_bytes": resp_dict.get("size_bytes", actual_path.stat().st_size if actual_path.is_file() else 0),
+        "video_path": str(actual_path) if actual_path.is_file() else "",
+        "copied_out_file": copied_out_file,
+        "attached_files": prepared,
+        "run_dir": str(run_dir),
+    }
+    write_json_file(receipt_path, receipt)
+
+    final_path_str = copied_out_file or str(actual_path)
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        print(final_path_str)
+        print(
+            f"[gemini-subagent] model={args.model} response_id={response_id} path={final_path_str}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def cmd_open_app(args: argparse.Namespace) -> int:
+    """Open Gemini.app directly to a built-in surface via googlegemini:// deeplink."""
+    deeplink = GEMINI_APP_DEEPLINKS[args.target]
+    if not args.dry_run:
+        if sys.platform != "darwin":
+            raise RuntimeError("open-app is only supported on macOS.")
+        subprocess.run(["/usr/bin/open", deeplink], stdin=subprocess.DEVNULL, check=True)
+    payload = {
+        "target": args.target,
+        "deeplink": deeplink,
+        "opened": not args.dry_run,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(deeplink)
+    return 0
+
+
 def ensure_collab_dirs(collab_dir: Path) -> tuple[Path, Path, Path]:
     inbox = collab_dir / "inbox"
     outbox = collab_dir / "outbox"
@@ -1184,6 +1532,8 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     inbox_path = inbox / f"{handoff_id}.md"
     outbox_path = outbox / f"{handoff_id}-RESULT.md"
     title = args.title or handoff_id
+    target = args.target
+    deeplink = GEMINI_APP_DEEPLINKS[target]
 
     files_section = (
         "\n".join(f"- `{p}`" for p in resolved_files)
@@ -1195,6 +1545,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
 
 - **任务 ID (`handoff_id`)**：`{handoff_id}`
 - **标题**：{title}
+- **目标工作区**：`{target}` (`{deeplink}`)
 - **创建时间 (UTC)**：{utc_now_iso()}
 - **临时产物目录**：`{scratch_dir}`
 - **最终结果回传路径（必填）**：`{outbox_path}`
@@ -1225,7 +1576,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         pbcopy = shutil.which("pbcopy") or "/usr/bin/pbcopy"
         subprocess.run([pbcopy], input=trigger_prompt, text=True, check=True)
     if args.open:
-        subprocess.run(["/usr/bin/open", "googlegemini://newchat"], stdin=subprocess.DEVNULL, check=True)
+        subprocess.run(["/usr/bin/open", deeplink], stdin=subprocess.DEVNULL, check=True)
     if args.attach_app:
         subprocess.run(
             ["/usr/bin/open", "-a", str(GEMINI_APP_PATH), str(inbox_path)],
@@ -1236,6 +1587,8 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     result = {
         "handoff_id": handoff_id,
         "title": title,
+        "target": target,
+        "target_deeplink": deeplink,
         "inbox_file": str(inbox_path),
         "expected_outbox_file": str(outbox_path),
         "scratch_dir": str(scratch_dir),
@@ -1243,6 +1596,7 @@ def cmd_handoff(args: argparse.Namespace) -> int:
         "trigger_prompt": trigger_prompt,
         "copied_to_clipboard": bool(args.copy),
         "opened_newchat": bool(args.open),
+        "opened_target": bool(args.open),
         "attached_to_app": bool(args.attach_app),
     }
 
@@ -1435,12 +1789,67 @@ def build_parser() -> argparse.ArgumentParser:
     p_agy.add_argument("--json", action="store_true", help="Emit JSON output.")
     p_agy.set_defaults(func=cmd_agy_ask)
 
+    p_img = sub.add_parser("image", help="Generate or edit images via gemini-api image with built-in style presets.")
+    p_img.add_argument("prompt", help="Image prompt or structured card/diagram specification.")
+    p_img.add_argument(
+        "--style",
+        choices=list(IMAGE_STYLE_PRESETS),
+        default="none",
+        help="Built-in visual preset (default: none).",
+    )
+    p_img.add_argument(
+        "-t",
+        "--tier",
+        choices=list(IMAGE_TIER_MODELS),
+        default="default",
+        help="Image model tier: lite, default (nano-banana-2.1), or pro (gemini-3-pro-image).",
+    )
+    p_img.add_argument("-m", "--model", help="Explicit image model ID (overrides --tier).")
+    p_img.add_argument("--aspect-ratio", help="Output aspect ratio (e.g. 3:4, 16:9, 9:16, 1:1).")
+    p_img.add_argument("--size", choices=["512", "1K", "2K", "4K"], help="Output image size (default: 2K).")
+    p_img.add_argument("-f", "--file", action="append", help="Attach reference/style image (repeatable).")
+    p_img.add_argument("--continue-id", help="Previous interaction/response ID for iterative image editing.")
+    p_img.add_argument("--out", help="Copy generated image to this file path.")
+    p_img.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_img.set_defaults(func=cmd_image)
+
+    p_vid = sub.add_parser("video", help="Generate or resume videos via gemini-api video (gemini-omni-1.2-flash).")
+    p_vid.add_argument("prompt", nargs="?", help="Video prompt (optional when --resume is set).")
+    p_vid.add_argument("-m", "--model", default="gemini-omni-1.2-flash", help="Video model ID (default: gemini-omni-1.2-flash).")
+    p_vid.add_argument("--aspect-ratio", help="Aspect ratio (e.g. 16:9, 9:16).")
+    p_vid.add_argument("--resolution", choices=["360p", "720p", "1080p", "4k"], default="1080p", help="Output resolution (default: 1080p).")
+    p_vid.add_argument("-f", "--file", action="append", help="Attach reference image/video (repeatable).")
+    p_vid.add_argument("--continue-id", help="Previous interaction ID to extend/edit video.")
+    p_vid.add_argument("--async", dest="async_run", action="store_true", help="Return operation ID without waiting.")
+    p_vid.add_argument("--resume", help="Resume polling an existing video operation ID.")
+    p_vid.add_argument("--out", help="Copy generated MP4 to this file path.")
+    p_vid.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_vid.set_defaults(func=cmd_video)
+
+    p_open = sub.add_parser("open-app", help="Open Gemini.app directly to images, videos, library, scheduled, or customize.")
+    p_open.add_argument(
+        "target",
+        nargs="?",
+        choices=list(GEMINI_APP_DEEPLINKS),
+        default="newchat",
+        help="Gemini.app target surface (default: newchat).",
+    )
+    p_open.add_argument("--dry-run", action="store_true", help="Print resolved deeplink without launching Gemini.app.")
+    p_open.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_open.set_defaults(func=cmd_open_app)
+
     p_ho = sub.add_parser("handoff", help="Create a local-file task brief in ~/Downloads/Gemini-Collab/inbox for Gemini.app.")
     p_ho.add_argument("task", help="Task instructions for Gemini.app desktop mode.")
     p_ho.add_argument("-f", "--file", action="append", help="Local file path to reference (repeatable).")
     p_ho.add_argument("--title", help="Optional short title for the task brief.")
+    p_ho.add_argument(
+        "--target",
+        choices=list(GEMINI_APP_DEEPLINKS),
+        default="newchat",
+        help="Gemini.app deeplink surface used with --open (default: newchat).",
+    )
     p_ho.add_argument("--copy", action="store_true", help="Copy ready-to-paste trigger prompt to macOS clipboard.")
-    p_ho.add_argument("--open", action="store_true", help="Open googlegemini://newchat in Gemini.app.")
+    p_ho.add_argument("--open", action="store_true", help="Open target googlegemini:// deeplink in Gemini.app.")
     p_ho.add_argument("--attach-app", action="store_true", help="Open the task brief file in Gemini.app.")
     p_ho.add_argument("--json", action="store_true", help="Emit JSON output.")
     p_ho.set_defaults(func=cmd_handoff)

@@ -91,8 +91,21 @@ cd gemini-app-as-subagent
 | `sandbox` | 调用 `antigravity-preview-09-2026` 远程 Linux 沙箱并拉回产物 | `gemini-subagent sandbox "跑 Python 基准测试输出 results.csv" --download results.csv` |
 | `status` | 按 `run_id` 或 `v1_...` 查询并同步后台任务结果 | `gemini-subagent status <id>` |
 | `agy-ask` | 用隔离 `$HOME` 调 `agy -p` 消耗其他 Google 账号额度 | `gemini-subagent agy-ask --account-home ~/.gemini-subagent-home "只读审查 src/"` |
-| `handoff` | 向 `~/Downloads/Gemini-Collab/inbox/` 派发桌面任务单 | `gemini-subagent handoff "整理发票并建提醒事项" -f ~/Downloads/a.pdf --copy --open` |
+| `image` | 调 `gemini-nano-banana-2.1` / `gemini-3-pro-image` 生图（内置 `knowledge-card` 风格预设） | `gemini-subagent image --style knowledge-card -t pro -f ref.jpg --out card.png "..."` |
+| `video` | 调 `gemini-omni-1.2-flash` 生成/续接/恢复视频 | `gemini-subagent video "运动图形转场" --aspect-ratio 16:9 --resolution 1080p` |
+| `open-app` | 通过 `googlegemini://` 一键打开桌面端生图/Veo 视频/素材库等面板 | `gemini-subagent open-app images` / `videos` / `library` |
+| `handoff` | 向 `~/Downloads/Gemini-Collab/inbox/` 派发桌面任务单（支持 `--target`） | `gemini-subagent handoff "整理发票并建提醒事项" -f ~/Downloads/a.pdf --copy --open` |
 | `collect` | 查看任务状态或回收 `outbox/` 结果 | `gemini-subagent collect --list` / `gemini-subagent collect <id> --archive` |
+
+### Gemini 生图与知识卡片（小红书分层图）三条接入路径
+
+| 路径 | 适用场景 | 实战用法 |
+|---|---|---|
+| **路径 A：`gemini-subagent image`（API 赠金精控出图）** | **最适合批量生成 2K/4K 知识卡片、架构图**，支持垫图锁版式、精准控字与多轮 `--continue-id` 微调 | `gemini-subagent image --style knowledge-card -t pro -f 参考图.jpg --aspect-ratio 3:4 --size 2K --out card.png "卡片文案..."` |
+| **路径 B：`Gemini.app` 桌面端 `?target=images`** | **白嫖订阅日常生图配额**（不扣 API 赠金），适合快速灵感试图与交互式重绘 | `gemini-subagent open-app images` 或 `gemini-subagent handoff --target images --copy --open` |
+| **路径 C：Antigravity `image-generator` 子代理** | 同账号对话内直接委派生成/改图 | 在 Antigravity 对话里附带参考图直接下令生成 |
+
+> **知识卡片高还原秘诀**：`--style knowledge-card`（内置 `3:4` 暖白底色、左竖条编号色卡、虚线标签胶囊与底部靶心总结框规范） + `-f 参考图.jpg` 锁死版式与配色 + `--size 2K` 保证中文小字清晰锐利 + `--continue-id <v1_id>` 二次局部改字！
 
 ### 在 `Gemini.app` 中挂载本地 MCP
 打开 `open "googlegemini://?target=customize"`，添加一条 Stdio MCP：

@@ -55,9 +55,22 @@ gemini-subagent status <run_id_or_v1_id>
 gemini-subagent sandbox "Benchmark sorting in Python and write results.csv" --download results.csv
 
 # Hand off a local-folder + macOS AppleScript task to Gemini.app
-gemini-subagent handoff "Summarize these PDFs and add Reminders tasks" -f ~/Downloads/invoices.pdf --copy --open
+gemini-subagent handoff "Summarize these PDFs and add Reminders tasks" -f ~/Downloads/invoices.pdf --target newchat --copy --open
 gemini-subagent collect --list
+
+# Generate a 2K 3:4 knowledge-card infographic using a reference layout image
+gemini-subagent image --style knowledge-card -t pro -f ./ref-card.jpg --aspect-ratio 3:4 --size 2K --out ./card.png "5-layer breakdown..."
+
+# Generate video via gemini-omni-1.2-flash or open Gemini.app native image/Veo studios
+gemini-subagent video "Minimalist motion explainer" --aspect-ratio 16:9 --resolution 1080p --out ./clip.mp4
+gemini-subagent open-app images
+gemini-subagent open-app videos
 ```
+
+### Three Ways to Generate Gemini Images
+1. **Path A — `gemini-subagent image` (API bonus credits)**: Best for scriptable batch knowledge cards (`--style knowledge-card` + `-f ref.jpg` style lock + `2K` `3:4` + `--continue-id` conversational text/layout edits).
+2. **Path B — `Gemini.app` Native Studio (`?target=images`, subscription quota)**: Run `gemini-subagent open-app images` or `gemini-subagent handoff --target images --copy --open` to use built-in desktop image/Veo quotas without spending API credits.
+3. **Path C — Antigravity `image-generator` subagent**: Direct inline delegation inside an Antigravity chat session.
 
 ---
 

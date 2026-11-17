@@ -46,8 +46,24 @@ class SubagentSmokeTests(unittest.TestCase):
     def test_cli_help_lists_all_subcommands(self) -> None:
         proc = self.run_cli("--help")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        for cmd in ("doctor", "ask", "review", "research", "sandbox", "status", "agy-ask", "handoff", "collect"):
+        for cmd in ("doctor", "ask", "review", "research", "sandbox", "status", "agy-ask", "image", "video", "open-app", "handoff", "collect"):
             self.assertIn(cmd, proc.stdout)
+
+    def test_image_help_and_deeplink_flags(self) -> None:
+        img_help = self.run_cli("image", "--help")
+        self.assertEqual(img_help.returncode, 0, img_help.stderr)
+        for flag in ("--style", "knowledge-card", "arch-diagram", "cover-poster", "--tier", "--aspect-ratio", "--size", "--continue-id"):
+            self.assertIn(flag, img_help.stdout)
+
+        open_dry = self.run_cli("open-app", "videos", "--dry-run")
+        self.assertEqual(open_dry.returncode, 0, open_dry.stderr)
+        self.assertEqual(open_dry.stdout.strip(), "googlegemini://?target=videos")
+
+        ho = self.run_cli("handoff", "Image studio check", "--target", "images", "--json")
+        self.assertEqual(ho.returncode, 0, ho.stderr)
+        ho_data = json.loads(ho.stdout)
+        self.assertEqual(ho_data["target"], "images")
+        self.assertEqual(ho_data["target_deeplink"], "googlegemini://?target=images")
 
     def test_handoff_and_collect_roundtrip(self) -> None:
         ho = self.run_cli(
