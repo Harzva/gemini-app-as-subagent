@@ -46,7 +46,11 @@ class SubagentSmokeTests(unittest.TestCase):
     def test_cli_help_lists_all_subcommands(self) -> None:
         proc = self.run_cli("--help")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        for cmd in ("doctor", "ask", "review", "research", "sandbox", "status", "agy-ask", "image", "video", "open-app", "handoff", "collect"):
+        for cmd in (
+            "doctor", "ask", "review", "research", "sandbox", "status",
+            "agy-ask", "image", "video", "tts", "transcribe", "notebook",
+            "mount-mcp", "open-app", "handoff", "collect",
+        ):
             self.assertIn(cmd, proc.stdout)
 
     def test_image_help_and_deeplink_flags(self) -> None:
@@ -55,15 +59,37 @@ class SubagentSmokeTests(unittest.TestCase):
         for flag in ("--style", "knowledge-card", "arch-diagram", "cover-poster", "--tier", "--aspect-ratio", "--size", "--continue-id"):
             self.assertIn(flag, img_help.stdout)
 
-        open_dry = self.run_cli("open-app", "videos", "--dry-run")
-        self.assertEqual(open_dry.returncode, 0, open_dry.stderr)
-        self.assertEqual(open_dry.stdout.strip(), "googlegemini://?target=videos")
+        for target, url in (("videos", "googlegemini://?target=videos"), ("students", "googlegemini://?target=students")):
+            open_dry = self.run_cli("open-app", target, "--dry-run")
+            self.assertEqual(open_dry.returncode, 0, open_dry.stderr)
+            self.assertEqual(open_dry.stdout.strip(), url)
 
         ho = self.run_cli("handoff", "Image studio check", "--target", "images", "--json")
         self.assertEqual(ho.returncode, 0, ho.stderr)
         ho_data = json.loads(ho.stdout)
         self.assertEqual(ho_data["target"], "images")
         self.assertEqual(ho_data["target_deeplink"], "googlegemini://?target=images")
+
+    def test_notebook_and_mount_mcp_dry_run(self) -> None:
+        nb_help = self.run_cli("notebook", "infographic", "--help")
+        self.assertEqual(nb_help.returncode, 0, nb_help.stderr)
+        for flag in ("--orientation", "--style", "editorial"):
+            self.assertIn(flag, nb_help.stdout)
+
+        tmp_mcp = self.root / "mcp_config.json"
+        tmp_mcp.write_text(json.dumps({"mcpServers": {"existing-tool": {"command": "echo"}}}), encoding="utf-8")
+        mounted = self.run_cli(
+            "mount-mcp", "--obsidian", "--blender", "--collab", "--config", str(tmp_mcp), "--dry-run", "--json"
+        )
+        self.assertEqual(mounted.returncode, 0, mounted.stderr)
+        payload = json.loads(mounted.stdout)
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["mounted"], ["obsidian-mcp", "blender-mcp", "gemini-collab"])
+        self.assertIn("existing-tool", payload["mcpServers"])
+        self.assertIn("obsidian-mcp", payload["mcpServers"])
+        self.assertIn("blender-mcp", payload["mcpServers"])
+        self.assertIn("gemini-collab", payload["mcpServers"])
+        self.assertNotIn("obsidian-mcp", json.loads(tmp_mcp.read_text(encoding="utf-8"))["mcpServers"])
 
     def test_handoff_and_collect_roundtrip(self) -> None:
         ho = self.run_cli(

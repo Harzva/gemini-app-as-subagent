@@ -93,9 +93,24 @@ cd gemini-app-as-subagent
 | `agy-ask` | 用隔离 `$HOME` 调 `agy -p` 消耗其他 Google 账号额度 | `gemini-subagent agy-ask --account-home ~/.gemini-subagent-home "只读审查 src/"` |
 | `image` | 调 `gemini-nano-banana-2.1` / `gemini-3-pro-image` 生图（内置 `knowledge-card` 风格预设） | `gemini-subagent image --style knowledge-card -t pro -f ref.jpg --out card.png "..."` |
 | `video` | 调 `gemini-omni-1.2-flash` 生成/续接/恢复视频 | `gemini-subagent video "运动图形转场" --aspect-ratio 16:9 --resolution 1080p` |
-| `open-app` | 通过 `googlegemini://` 一键打开桌面端生图/Veo 视频/素材库等面板 | `gemini-subagent open-app images` / `videos` / `library` |
+| `tts` | 调 `gemini-3.8-flash-tts` 生成自然单人/双人对话配音（24kHz WAV） | `gemini-subagent tts "欢迎收听技术早报" --language zh-CN --out voice.wav` |
+| `transcribe` | 音视频转字幕/逐字稿（自动上传 `>14 MB` 大文件） | `gemini-subagent transcribe -f meeting.mp4 --format srt --out subs.srt` |
+| `notebook` | 驱动 NotebookLM / 笔记本：`list` / `ask` / `infographic`（竖版中文信息图）/ `studio`（PPT/播客/导图） | `gemini-subagent notebook infographic --new-title "研报" -f spec.md --out card.png` |
+| `mount-mcp` | 一键将 `Gemini.app` 包内 **Obsidian / Blender / Autodesk MCP** 与 `gemini-collab` 写入 `mcp_config.json` | `gemini-subagent mount-mcp --obsidian --blender --collab` |
+| `open-app` | 通过 `googlegemini://` 一键打开桌面端生图/Veo 视频/素材库/学习等面板 | `gemini-subagent open-app images` / `videos` / `library` / `students` |
 | `handoff` | 向 `~/Downloads/Gemini-Collab/inbox/` 派发桌面任务单（支持 `--target`） | `gemini-subagent handoff "整理发票并建提醒事项" -f ~/Downloads/a.pdf --copy --open` |
 | `collect` | 查看任务状态或回收 `outbox/` 结果 | `gemini-subagent collect --list` / `gemini-subagent collect <id> --archive` |
+
+### 白嫖 `Gemini.app` 包内自带的官方 MCP 二进制
+`/Applications/Gemini.app/Contents/Helpers/` 内直接编译好了独立的标准 Stdio MCP Server，无需打开桌面窗口就能直接挂进 **Antigravity / Claude Code / Codex / Cursor** 使用：
+- `obsidian_mcp_server`（15 个工具：笔记搜索、读写、`[[wikilink]]` 反向链接、标签与前置元数据管理）
+- `blender_mcp_server`（9 个工具：Blender 场景建模、材质、打光、Python 执行与视口截图）
+- `autodesk_mcp_server`（8 个工具：Autodesk Fusion 参数化 CAD 建模与导出）
+
+一条命令自动合并写入你的 MCP 配置（加 `--dry-run` 可先预览 JSON）：
+```zsh
+gemini-subagent mount-mcp --obsidian --blender --collab
+```
 
 ### Gemini 生图与知识卡片（小红书分层图）三条接入路径
 

@@ -42,7 +42,39 @@ GEMINI_APP_DEEPLINKS: dict[str, str] = {
     "customize": "googlegemini://?target=customize",
     "scheduled": "googlegemini://?target=scheduled",
     "your_day": "googlegemini://?target=your_day",
+    "students": "googlegemini://?target=students",
     "needsattention": "googlegemini://needsattention?ext_src=app_shortcut",
+}
+
+GEMINI_HELPERS_DIR = GEMINI_APP_PATH / "Contents" / "Helpers"
+BUNDLED_MCP_BINARIES: dict[str, str] = {
+    "obsidian": "obsidian_mcp_server",
+    "blender": "blender_mcp_server",
+    "autodesk": "autodesk_mcp_server",
+}
+
+NOTEBOOK_STUDIO_TYPES = [
+    "slide-deck",
+    "audio",
+    "video",
+    "cinematic-video",
+    "mind-map",
+    "data-table",
+    "flashcards",
+    "quiz",
+    "report",
+]
+
+NOTEBOOK_DEFAULT_EXT: dict[str, str] = {
+    "slide-deck": ".pdf",
+    "audio": ".mp3",
+    "video": ".mp4",
+    "cinematic-video": ".mp4",
+    "mind-map": ".json",
+    "data-table": ".csv",
+    "flashcards": ".json",
+    "quiz": ".json",
+    "report": ".md",
 }
 
 IMAGE_STYLE_PRESETS: dict[str, dict[str, Any]] = {
@@ -630,6 +662,29 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     collab_exists = collab_dir.is_dir()
     whoami_ok = bool(meta["whoami"].get("configured"))
 
+    nb_bin = resolve_binary("NOTEBOOKLM_BIN", "notebooklm")
+    nb_ver = ""
+    nb_ok = nb_bin is not None and nb_bin.is_file() and os.access(nb_bin, os.X_OK)
+    if nb_ok:
+        p = subprocess.run(
+            [str(nb_bin), "--version"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        nb_ver = p.stdout.strip().splitlines()[0] if p.stdout.strip() else "installed"
+
+    bundled_mcp: dict[str, dict[str, Any]] = {}
+    for key, binary_name in BUNDLED_MCP_BINARIES.items():
+        bp = GEMINI_HELPERS_DIR / binary_name
+        bundled_mcp[key] = {
+            "ok": bp.is_file() and os.access(bp, os.X_OK),
+            "path": str(bp),
+        }
+
     report = {
         "ok": gemini_bin_ok and whoami_ok and storage_ok,
         "gemini_api": {
@@ -642,6 +697,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "path": str(agy_bin) if agy_bin else "",
             "version": agy_ver,
         },
+        "notebooklm": {
+            "ok": nb_ok,
+            "path": str(nb_bin) if nb_bin else "",
+            "version": nb_ver,
+        },
+        "bundled_mcp": bundled_mcp,
         "auth": {
             "ok": whoami_ok,
             "effective_home": meta["effective_home"],
@@ -674,6 +735,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print(f"[{'OK' if gemini_bin_ok else 'FAIL'}] gemini-api: {gemini_bin or 'missing'} ({gemini_ver or 'n/a'})")
         print(f"[{'OK' if agy_ok else 'INFO'}] agy: {agy_bin or 'not installed'} ({agy_ver or 'n/a'})")
+        print(f"[{'OK' if nb_ok else 'INFO'}] notebooklm: {nb_bin or 'not installed'} ({nb_ver or 'n/a'})")
         print(
             f"[{'OK' if whoami_ok else 'FAIL'}] auth: {meta['whoami'].get('api_key_status')} | "
             f"home={meta['effective_home']}"
@@ -688,6 +750,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             print(f"[FAIL] storage: {storage_info['error']}")
         print(f"[{'OK' if gemini_app_ok else 'INFO'}] Gemini.app: {GEMINI_APP_PATH}")
+        for key in ("obsidian", "blender"):
+            item = bundled_mcp[key]
+            print(f"[{'OK' if item['ok'] else 'INFO'}] {BUNDLED_MCP_BINARIES[key]}: {item['path']}")
         print(
             f"[{'OK' if collab_exists else 'INFO'}] Collab Mailbox: {collab_dir} "
             f"({'ready' if collab_exists else 'created on first handoff/collect'})"
@@ -1482,6 +1547,605 @@ def cmd_video(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tts(args: argparse.Namespace) -> int:
+    """Synthesize speech WAV via gemini-api tts (default: gemini-3.8-flash-tts)."""
+    if not args.text and not args.file and not args.stdin:
+        raise RuntimeError("Provide <text>, --file, or --stdin.")
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    gemini_bin = require_gemini_bin(resolve_binary("GEMINI_API_BIN", "gemini-api"))
+    env, _ = build_env(gemini_bin)
+    verify_storage(cfg, state_dir, create_dirs=True)
+
+    run_id = make_run_id("tts-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    target_out = run_dir / "voice.wav"
+
+    stdin_text = sys.stdin.read() if args.stdin else None
+    cli_args: list[str] = ["tts"]
+    if args.text:
+        cli_args.append(args.text)
+    cli_args.extend(["-m", args.model, "--out", str(target_out), "-o", "json"])
+    if args.multi_speaker:
+        cli_args.extend(["--multi-speaker", args.multi_speaker])
+    else:
+        cli_args.extend(["-v", args.voice])
+    if args.language:
+        cli_args.extend(["--language", args.language])
+    if args.file:
+        prompt_file = Path(args.file).expanduser().resolve()
+        if not prompt_file.is_file():
+            raise RuntimeError(f"Prompt file does not exist: {args.file}")
+        cli_args.extend(["-f", str(prompt_file)])
+    if args.stdin:
+        cli_args.append("--stdin")
+
+    rc, resp, raw_out, raw_err = run_gemini_json(gemini_bin, cli_args, env, stdin_text=stdin_text, timeout=300)
+    receipt_path = run_dir / "receipt.json"
+    if rc != 0:
+        err_msg = raw_err.strip() or raw_out.strip() or f"gemini-api tts exited with {rc}"
+        receipt = {
+            "kind": "tts",
+            "run_id": run_id,
+            "created_at": utc_now_iso(),
+            "model": args.model,
+            "voice": args.voice if not args.multi_speaker else args.multi_speaker,
+            "status": "error",
+            "returncode": rc,
+            "run_dir": str(run_dir),
+            "error": err_msg,
+        }
+        write_json_file(receipt_path, receipt)
+        if args.json:
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        else:
+            print(f"[gemini-subagent] ERROR (exit {rc}): {err_msg}", file=sys.stderr)
+        return rc
+
+    resp_dict = resp or {}
+    raw_path_str = resp_dict.get("path") or str(target_out)
+    actual_path = Path(raw_path_str).expanduser().resolve()
+    if not actual_path.is_file() and target_out.is_file():
+        actual_path = target_out.resolve()
+
+    copied_out_file = ""
+    if args.out and actual_path.is_file():
+        out_dest = Path(args.out).expanduser().resolve()
+        out_dest.parent.mkdir(parents=True, exist_ok=True)
+        if actual_path != out_dest:
+            shutil.copy2(actual_path, out_dest)
+        copied_out_file = str(out_dest)
+
+    receipt = {
+        "kind": "tts",
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "model": resp_dict.get("model", args.model),
+        "voice": args.voice if not args.multi_speaker else args.multi_speaker,
+        "language": args.language or "",
+        "status": "completed" if actual_path.is_file() else "unknown",
+        "returncode": rc,
+        "mime_type": resp_dict.get("mime_type", "audio/wav"),
+        "size_bytes": resp_dict.get("size_bytes", actual_path.stat().st_size if actual_path.is_file() else 0),
+        "audio_path": str(actual_path) if actual_path.is_file() else "",
+        "copied_out_file": copied_out_file,
+        "run_dir": str(run_dir),
+    }
+    write_json_file(receipt_path, receipt)
+
+    final_path_str = copied_out_file or str(actual_path)
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        print(final_path_str)
+        print(
+            f"[gemini-subagent] tts model={receipt['model']} size={receipt['size_bytes']} path={final_path_str}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def cmd_transcribe(args: argparse.Namespace) -> int:
+    """Transcribe audio/video inputs via gemini-api transcribe (auto-uploading >14 MB)."""
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    gemini_bin = require_gemini_bin(resolve_binary("GEMINI_API_BIN", "gemini-api"))
+    env, _ = build_env(gemini_bin)
+    verify_storage(cfg, state_dir, create_dirs=True)
+
+    run_id = make_run_id("transcribe-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    prepared = prepare_inputs(gemini_bin, args.file, env)
+    multi = len(prepared) > 1
+    if multi:
+        target_out = run_dir / "transcripts"
+        target_out.mkdir(parents=True, exist_ok=True)
+    else:
+        target_out = run_dir / f"transcript.{args.format}"
+
+    cli_args: list[str] = ["transcribe", "--format", args.format, "--out", str(target_out), "-o", "json"]
+    for item in prepared:
+        cli_args.extend(["-i", item["api_input"]])
+    if args.no_speakers:
+        cli_args.append("--no-speakers")
+    if args.no_timestamps:
+        cli_args.append("--no-timestamps")
+    if args.model:
+        cli_args.extend(["-m", args.model])
+
+    rc, resp, raw_out, raw_err = run_gemini_json(gemini_bin, cli_args, env, stdin_text=None, timeout=600)
+    receipt_path = run_dir / "receipt.json"
+    if rc != 0:
+        err_msg = raw_err.strip() or raw_out.strip() or f"gemini-api transcribe exited with {rc}"
+        receipt = {
+            "kind": "transcribe",
+            "run_id": run_id,
+            "created_at": utc_now_iso(),
+            "format": args.format,
+            "status": "error",
+            "returncode": rc,
+            "attached_files": prepared,
+            "run_dir": str(run_dir),
+            "error": err_msg,
+        }
+        write_json_file(receipt_path, receipt)
+        if args.json:
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+        else:
+            print(f"[gemini-subagent] ERROR (exit {rc}): {err_msg}", file=sys.stderr)
+        return rc
+
+    resp_dict = resp or {}
+    results = resp_dict.get("results") or []
+    generated_paths: list[Path] = []
+    for item in results:
+        if isinstance(item, dict) and item.get("path"):
+            p = Path(item["path"]).expanduser().resolve()
+            if p.is_file():
+                generated_paths.append(p)
+    if not generated_paths and target_out.is_file():
+        generated_paths.append(target_out.resolve())
+
+    copied_paths: list[str] = []
+    if args.out and generated_paths:
+        out_raw = args.out
+        out_dest = Path(out_raw).expanduser().resolve()
+        if len(generated_paths) == 1 and not out_raw.endswith("/") and not out_dest.is_dir():
+            out_dest.parent.mkdir(parents=True, exist_ok=True)
+            if generated_paths[0] != out_dest:
+                shutil.copy2(generated_paths[0], out_dest)
+            copied_paths.append(str(out_dest))
+        else:
+            out_dest.mkdir(parents=True, exist_ok=True)
+            for gp in generated_paths:
+                dest_file = out_dest / gp.name
+                if gp != dest_file:
+                    shutil.copy2(gp, dest_file)
+                copied_paths.append(str(dest_file))
+
+    receipt = {
+        "kind": "transcribe",
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "model": resp_dict.get("model", args.model or "auto"),
+        "format": resp_dict.get("format", args.format),
+        "status": "completed" if generated_paths else "unknown",
+        "returncode": rc,
+        "results": results,
+        "generated_files": [str(p) for p in generated_paths],
+        "copied_out_files": copied_paths,
+        "attached_files": prepared,
+        "run_dir": str(run_dir),
+    }
+    write_json_file(receipt_path, receipt)
+
+    final_paths = copied_paths or [str(p) for p in generated_paths]
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        for p in final_paths:
+            print(p)
+        print(f"[gemini-subagent] transcribe count={len(final_paths)} format={args.format}", file=sys.stderr)
+    return 0
+
+
+def require_notebooklm_bin() -> Path:
+    nb_bin = resolve_binary("NOTEBOOKLM_BIN", "notebooklm")
+    if nb_bin is None or not nb_bin.is_file():
+        raise RuntimeError(
+            "notebooklm CLI not found. Install it or set NOTEBOOKLM_BIN=/path/to/notebooklm."
+        )
+    return nb_bin
+
+
+def build_notebook_env() -> dict[str, str]:
+    env, _ = build_env(None)
+    env.setdefault("NOTEBOOKLM_HOME", str(REAL_HOME / ".notebooklm"))
+    return env
+
+
+def run_notebooklm_cmd(
+    nb_bin: Path,
+    cli_args: list[str],
+    env: dict[str, str],
+    timeout: int = 300,
+) -> tuple[Any, str]:
+    proc = subprocess.run(
+        [str(nb_bin), *cli_args],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    combined = f"{proc.stdout}\n{proc.stderr}"
+    if "AUTH_ERROR" in combined or "Authentication expired" in combined or "Run 'notebooklm login'" in combined:
+        raise RuntimeError(
+            "NotebookLM auth expired. Run 'notebooklm login' in an interactive terminal to refresh cookies."
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"notebooklm exited with {proc.returncode}")
+    stripped = proc.stdout.strip()
+    if stripped:
+        try:
+            return json.loads(stripped), proc.stdout
+        except json.JSONDecodeError:
+            pass
+    return None, proc.stdout
+
+
+def extract_notebooklm_id(data: Any, nested_key: str) -> str:
+    if not isinstance(data, dict):
+        return ""
+    if isinstance(data.get("id"), str) and data["id"]:
+        return data["id"]
+    nested = data.get(nested_key)
+    if isinstance(nested, dict) and isinstance(nested.get("id"), str):
+        return nested["id"]
+    return ""
+
+
+def ensure_notebook_and_sources(
+    nb_bin: Path,
+    env: dict[str, str],
+    notebook_id: str | None,
+    new_title: str | None,
+    files: list[str] | None,
+    profile: str | None,
+) -> tuple[str, list[str]]:
+    prefix = ["--profile", profile] if profile else []
+    if not notebook_id and not new_title:
+        raise RuntimeError("Provide either -n/--notebook or --new-title.")
+
+    resolved_nb = notebook_id or ""
+    if not resolved_nb and new_title:
+        created, raw_out = run_notebooklm_cmd(nb_bin, [*prefix, "create", new_title, "--json"], env, timeout=60)
+        resolved_nb = extract_notebooklm_id(created, "notebook")
+        if not resolved_nb:
+            raise RuntimeError(f"Failed to parse created notebook ID from output: {raw_out.strip()!r}")
+
+    added_sources: list[str] = []
+    for raw_src in files or []:
+        candidate = Path(raw_src).expanduser()
+        is_symlink = candidate.is_symlink()
+        src_arg = str(candidate.resolve()) if candidate.exists() else raw_src
+        add_args = [*prefix, "source", "add", "-n", resolved_nb, src_arg, "--json"]
+        if is_symlink:
+            add_args.append("--follow-symlinks")
+        added, _ = run_notebooklm_cmd(nb_bin, add_args, env, timeout=120)
+        src_id = extract_notebooklm_id(added, "source")
+        if src_id:
+            added_sources.append(src_id)
+            run_notebooklm_cmd(
+                nb_bin,
+                [*prefix, "source", "wait", "-n", resolved_nb, src_id, "--timeout", "180"],
+                env,
+                timeout=210,
+            )
+    return resolved_nb, added_sources
+
+
+def cmd_notebook_list(args: argparse.Namespace) -> int:
+    nb_bin = require_notebooklm_bin()
+    env = build_notebook_env()
+    prefix = ["--profile", args.profile] if args.profile else []
+    cli_args = [*prefix, "list", "--limit", str(args.limit)]
+    if args.json:
+        cli_args.append("--json")
+    data, raw_out = run_notebooklm_cmd(nb_bin, cli_args, env, timeout=60)
+    if args.json:
+        print(json.dumps(data if data is not None else {"raw": raw_out}, ensure_ascii=False, indent=2))
+    else:
+        print(raw_out, end="" if raw_out.endswith("\n") else "\n")
+    return 0
+
+
+def cmd_notebook_ask(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    verify_storage(cfg, state_dir, create_dirs=True)
+    nb_bin = require_notebooklm_bin()
+    env = build_notebook_env()
+
+    run_id = make_run_id("notebook-ask-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    nb_id, added_sources = ensure_notebook_and_sources(
+        nb_bin, env, args.notebook, args.new_title, args.file, args.profile
+    )
+    prefix = ["--profile", args.profile] if args.profile else []
+    data, raw_out = run_notebooklm_cmd(
+        nb_bin, [*prefix, "ask", "-n", nb_id, args.question, "--json"], env, timeout=180
+    )
+
+    answer = ""
+    if isinstance(data, dict):
+        answer = str(data.get("answer") or data.get("text") or data.get("response") or "")
+    if not answer:
+        answer = raw_out.strip()
+
+    output_md_path = run_dir / "output.md"
+    if answer:
+        normalized = answer if answer.endswith("\n") else answer + "\n"
+        write_text_file(output_md_path, normalized)
+        if args.out:
+            write_text_file(Path(args.out).expanduser().resolve(), normalized)
+
+    receipt = {
+        "kind": "notebook-ask",
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "notebook_id": nb_id,
+        "added_sources": added_sources,
+        "question": args.question,
+        "status": "completed",
+        "run_dir": str(run_dir),
+        "output_file": str(output_md_path) if answer else "",
+        "copied_out_file": str(Path(args.out).expanduser().resolve()) if (answer and args.out) else "",
+    }
+    write_json_file(run_dir / "receipt.json", receipt)
+
+    if args.json:
+        print(json.dumps({**receipt, "answer": answer, "raw": data}, ensure_ascii=False, indent=2))
+    else:
+        print(answer)
+        print(f"[gemini-subagent] notebook={nb_id} saved={output_md_path}", file=sys.stderr)
+    return 0
+
+
+def cmd_notebook_infographic(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    verify_storage(cfg, state_dir, create_dirs=True)
+    nb_bin = require_notebooklm_bin()
+    env = build_notebook_env()
+
+    run_id = make_run_id("notebook-infographic-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    nb_id, added_sources = ensure_notebook_and_sources(
+        nb_bin, env, args.notebook, args.new_title, args.file, args.profile
+    )
+    prefix = ["--profile", args.profile] if args.profile else []
+    gen_args = [*prefix, "generate", "infographic"]
+    if args.description:
+        gen_args.append(args.description)
+    gen_args.extend([
+        "-n",
+        nb_id,
+        "--orientation",
+        args.orientation,
+        "--style",
+        args.style,
+        "--detail",
+        args.detail,
+        "--language",
+        args.language,
+        "--wait",
+        "--timeout",
+        "600",
+        "--json",
+    ])
+    gen_data, _ = run_notebooklm_cmd(nb_bin, gen_args, env, timeout=660)
+
+    target_out = run_dir / "infographic.png"
+    run_notebooklm_cmd(
+        nb_bin,
+        [*prefix, "download", "infographic", "-n", nb_id, "--latest", "--force", str(target_out)],
+        env,
+        timeout=120,
+    )
+
+    copied_out = ""
+    if args.out and target_out.is_file():
+        out_dest = Path(args.out).expanduser().resolve()
+        out_dest.parent.mkdir(parents=True, exist_ok=True)
+        if target_out.resolve() != out_dest:
+            shutil.copy2(target_out, out_dest)
+        copied_out = str(out_dest)
+
+    receipt = {
+        "kind": "notebook-infographic",
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "notebook_id": nb_id,
+        "added_sources": added_sources,
+        "orientation": args.orientation,
+        "style": args.style,
+        "detail": args.detail,
+        "language": args.language,
+        "status": "completed" if target_out.is_file() else "unknown",
+        "output_file": str(target_out) if target_out.is_file() else "",
+        "copied_out_file": copied_out,
+        "generate_meta": gen_data,
+        "run_dir": str(run_dir),
+    }
+    write_json_file(run_dir / "receipt.json", receipt)
+
+    final_path = copied_out or str(target_out)
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        print(final_path)
+        print(f"[gemini-subagent] notebook={nb_id} style={args.style} path={final_path}", file=sys.stderr)
+    return 0
+
+
+def cmd_notebook_studio(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    state_dir = resolve_state_dir(cfg)
+    verify_storage(cfg, state_dir, create_dirs=True)
+    nb_bin = require_notebooklm_bin()
+    env = build_notebook_env()
+
+    run_id = make_run_id(f"notebook-{args.artifact_type}-")
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    nb_id, added_sources = ensure_notebook_and_sources(
+        nb_bin, env, args.notebook, args.new_title, args.file, args.profile
+    )
+    prefix = ["--profile", args.profile] if args.profile else []
+    gen_args = [*prefix, "generate", args.artifact_type]
+    if args.description:
+        gen_args.append(args.description)
+    gen_args.extend(["-n", nb_id, "--language", args.language, "--wait", "--timeout", "1200", "--json"])
+    gen_data, _ = run_notebooklm_cmd(nb_bin, gen_args, env, timeout=1260)
+
+    ext = NOTEBOOK_DEFAULT_EXT.get(args.artifact_type, ".bin")
+    target_out = run_dir / f"artifact{ext}"
+    run_notebooklm_cmd(
+        nb_bin,
+        [*prefix, "download", args.artifact_type, "-n", nb_id, "--latest", "--force", str(target_out)],
+        env,
+        timeout=180,
+    )
+
+    copied_out = ""
+    if args.out and target_out.is_file():
+        out_dest = Path(args.out).expanduser().resolve()
+        out_dest.parent.mkdir(parents=True, exist_ok=True)
+        if target_out.resolve() != out_dest:
+            shutil.copy2(target_out, out_dest)
+        copied_out = str(out_dest)
+
+    receipt = {
+        "kind": "notebook-studio",
+        "artifact_type": args.artifact_type,
+        "run_id": run_id,
+        "created_at": utc_now_iso(),
+        "notebook_id": nb_id,
+        "added_sources": added_sources,
+        "language": args.language,
+        "status": "completed" if target_out.is_file() else "unknown",
+        "output_file": str(target_out) if target_out.is_file() else "",
+        "copied_out_file": copied_out,
+        "generate_meta": gen_data,
+        "run_dir": str(run_dir),
+    }
+    write_json_file(run_dir / "receipt.json", receipt)
+
+    final_path = copied_out or str(target_out)
+    if args.json:
+        print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    else:
+        print(final_path)
+        print(f"[gemini-subagent] notebook={nb_id} type={args.artifact_type} path={final_path}", file=sys.stderr)
+    return 0
+
+
+def cmd_mount_mcp(args: argparse.Namespace) -> int:
+    """Register Gemini.app's bundled MCP servers and gemini-collab MCP into an mcp_config.json file."""
+    selected: list[str] = []
+    if args.all:
+        selected = ["obsidian", "blender", "autodesk", "collab"]
+    else:
+        if args.obsidian:
+            selected.append("obsidian")
+        if args.blender:
+            selected.append("blender")
+        if args.autodesk:
+            selected.append("autodesk")
+        if args.collab:
+            selected.append("collab")
+    if not selected:
+        selected = ["obsidian", "blender", "collab"]
+
+    config_path = (
+        Path(args.config).expanduser().resolve()
+        if args.config
+        else (Path.home() / ".gemini" / "config" / "mcp_config.json").resolve()
+    )
+
+    existing: dict[str, Any] = {}
+    if config_path.is_file():
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Failed reading {config_path}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(f"MCP config {config_path} must contain a JSON object.")
+        existing = loaded
+
+    servers = existing.get("mcpServers")
+    if servers is None:
+        servers = {}
+    if not isinstance(servers, dict):
+        raise RuntimeError(f"'mcpServers' in {config_path} must be a JSON object.")
+    merged_servers = dict(servers)
+
+    env_block = {
+        "HOME": str(REAL_HOME),
+        "PATH": os.pathsep.join(REQUIRED_PATH_PARTS),
+    }
+    collab_script = Path(__file__).resolve().parent / "gemini_collab_mcp.py"
+    python_bin = "/usr/bin/python3" if Path("/usr/bin/python3").is_file() else sys.executable
+
+    added_entries: dict[str, dict[str, Any]] = {}
+    for key in selected:
+        if key == "collab":
+            name = "gemini-collab"
+            entry = {
+                "command": python_bin,
+                "args": [str(collab_script)],
+                "env": dict(env_block),
+            }
+        else:
+            name = f"{key}-mcp"
+            entry = {
+                "command": str(GEMINI_HELPERS_DIR / BUNDLED_MCP_BINARIES[key]),
+                "args": [],
+                "env": dict(env_block),
+            }
+        merged_servers[name] = entry
+        added_entries[name] = entry
+
+    merged_config = dict(existing)
+    merged_config["mcpServers"] = merged_servers
+
+    if not args.dry_run:
+        write_json_file(config_path, merged_config)
+
+    payload = {
+        "config_path": str(config_path),
+        "dry_run": bool(args.dry_run),
+        "mounted": list(added_entries.keys()),
+        "mcpServers": merged_servers,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        verb = "Would mount" if args.dry_run else "Mounted"
+        print(f"{verb} {', '.join(added_entries)} into {config_path}")
+    return 0
+
+
 def cmd_open_app(args: argparse.Namespace) -> int:
     """Open Gemini.app directly to a built-in surface via googlegemini:// deeplink."""
     deeplink = GEMINI_APP_DEEPLINKS[args.target]
@@ -1825,6 +2489,89 @@ def build_parser() -> argparse.ArgumentParser:
     p_vid.add_argument("--out", help="Copy generated MP4 to this file path.")
     p_vid.add_argument("--json", action="store_true", help="Emit JSON output.")
     p_vid.set_defaults(func=cmd_video)
+
+    p_tts = sub.add_parser("tts", help="Synthesize natural speech WAV via gemini-3.8-flash-tts.")
+    p_tts.add_argument("text", nargs="?", help="Text to speak (or pass --file / --stdin).")
+    p_tts.add_argument("-f", "--file", help="Read script text from local file.")
+    p_tts.add_argument("--stdin", action="store_true", help="Read script text from stdin.")
+    p_tts.add_argument("-m", "--model", default="gemini-3.8-flash-tts", help="TTS model (default: gemini-3.8-flash-tts).")
+    p_tts.add_argument("-v", "--voice", default="Kore", help="Single-speaker voice name (default: Kore).")
+    p_tts.add_argument("--multi-speaker", help="Dual-speaker voice mapping, e.g. 'Alice=Kore,Bob=Puck'.")
+    p_tts.add_argument("--language", help="Optional BCP-47 language hint (e.g. zh-CN, en-US).")
+    p_tts.add_argument("--out", help="Copy generated WAV to this file path.")
+    p_tts.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_tts.set_defaults(func=cmd_tts)
+
+    p_tr = sub.add_parser("transcribe", help="Transcribe local audio/video files via gemini-api transcribe.")
+    p_tr.add_argument("-f", "--file", action="append", required=True, help="Audio/video file to transcribe (repeatable; >14 MB auto-uploaded).")
+    p_tr.add_argument("--format", choices=["md", "text", "json", "srt"], default="md", help="Transcript format (default: md).")
+    p_tr.add_argument("--no-speakers", action="store_true", help="Disable speaker diarization.")
+    p_tr.add_argument("--no-timestamps", action="store_true", help="Omit timestamps.")
+    p_tr.add_argument("-m", "--model", help="Optional transcribe model override.")
+    p_tr.add_argument("--out", help="Copy output transcript file (or directory for multi-file) here.")
+    p_tr.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_tr.set_defaults(func=cmd_transcribe)
+
+    p_nb = sub.add_parser("notebook", help="Drive NotebookLM / Gemini Notebook (list, ask, infographic, studio).")
+    nb_sub = p_nb.add_subparsers(dest="notebook_action", required=True)
+
+    p_nbl = nb_sub.add_parser("list", help="List available NotebookLM notebooks.")
+    p_nbl.add_argument("--limit", type=int, default=20, help="Max notebooks to list (default: 20).")
+    p_nbl.add_argument("--profile", help="NotebookLM CLI profile name.")
+    p_nbl.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_nbl.set_defaults(func=cmd_notebook_list)
+
+    p_nba = nb_sub.add_parser("ask", help="Ask a NotebookLM notebook (optionally creating + adding local sources).")
+    p_nba.add_argument("question", help="Question to ask the notebook.")
+    p_nba.add_argument("-n", "--notebook", help="Existing notebook ID (or partial ID).")
+    p_nba.add_argument("--new-title", help="Create a new notebook with this title first.")
+    p_nba.add_argument("-f", "--file", action="append", help="Local file or URL source to add and wait on (repeatable).")
+    p_nba.add_argument("--profile", help="NotebookLM CLI profile name.")
+    p_nba.add_argument("--out", help="Also write answer Markdown to this path.")
+    p_nba.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_nba.set_defaults(func=cmd_notebook_ask)
+
+    p_nbi = nb_sub.add_parser("infographic", help="Generate & download a NotebookLM infographic (free subscription quota).")
+    p_nbi.add_argument("description", nargs="?", help="Optional infographic layout/content instructions.")
+    p_nbi.add_argument("-n", "--notebook", help="Existing notebook ID (or partial ID).")
+    p_nbi.add_argument("--new-title", help="Create a new notebook with this title first.")
+    p_nbi.add_argument("-f", "--file", action="append", help="Local file or URL source to add and wait on (repeatable).")
+    p_nbi.add_argument("--orientation", choices=["portrait", "landscape", "square"], default="portrait", help="Orientation (default: portrait).")
+    p_nbi.add_argument(
+        "--style",
+        choices=["auto", "sketch-note", "professional", "bento-grid", "editorial", "instructional", "bricks", "clay", "anime", "kawaii", "scientific"],
+        default="editorial",
+        help="Infographic style (default: editorial).",
+    )
+    p_nbi.add_argument("--detail", choices=["concise", "standard", "detailed"], default="detailed", help="Detail level (default: detailed).")
+    p_nbi.add_argument("--language", default="zh-CN", help="Output language code (default: zh-CN).")
+    p_nbi.add_argument("--profile", help="NotebookLM CLI profile name.")
+    p_nbi.add_argument("--out", help="Copy downloaded infographic PNG to this path.")
+    p_nbi.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_nbi.set_defaults(func=cmd_notebook_infographic)
+
+    p_nbs = nb_sub.add_parser("studio", help="Generate & download NotebookLM Studio artifacts (slide-deck, audio, video, mind-map...).")
+    p_nbs.add_argument("artifact_type", choices=NOTEBOOK_STUDIO_TYPES, help="Studio artifact type.")
+    p_nbs.add_argument("description", nargs="?", help="Optional generation guidance prompt.")
+    p_nbs.add_argument("-n", "--notebook", help="Existing notebook ID (or partial ID).")
+    p_nbs.add_argument("--new-title", help="Create a new notebook with this title first.")
+    p_nbs.add_argument("-f", "--file", action="append", help="Local file or URL source to add and wait on (repeatable).")
+    p_nbs.add_argument("--language", default="zh-CN", help="Output language code (default: zh-CN).")
+    p_nbs.add_argument("--profile", help="NotebookLM CLI profile name.")
+    p_nbs.add_argument("--out", help="Copy downloaded artifact to this path.")
+    p_nbs.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_nbs.set_defaults(func=cmd_notebook_studio)
+
+    p_mcp = sub.add_parser("mount-mcp", help="Mount Gemini.app bundled MCP servers (obsidian, blender, autodesk) and gemini-collab.")
+    p_mcp.add_argument("--obsidian", action="store_true", help="Mount Gemini.app bundled obsidian_mcp_server.")
+    p_mcp.add_argument("--blender", action="store_true", help="Mount Gemini.app bundled blender_mcp_server.")
+    p_mcp.add_argument("--autodesk", action="store_true", help="Mount Gemini.app bundled autodesk_mcp_server.")
+    p_mcp.add_argument("--collab", action="store_true", help="Mount local gemini_collab_mcp.py.")
+    p_mcp.add_argument("--all", action="store_true", help="Mount all 4 MCP servers.")
+    p_mcp.add_argument("--config", help="Target mcp_config.json path (default: ~/.gemini/config/mcp_config.json).")
+    p_mcp.add_argument("--dry-run", action="store_true", help="Print resulting config without writing to disk.")
+    p_mcp.add_argument("--json", action="store_true", help="Emit JSON output.")
+    p_mcp.set_defaults(func=cmd_mount_mcp)
 
     p_open = sub.add_parser("open-app", help="Open Gemini.app directly to images, videos, library, scheduled, or customize.")
     p_open.add_argument(

@@ -65,6 +65,18 @@ gemini-subagent image --style knowledge-card -t pro -f ./ref-card.jpg --aspect-r
 gemini-subagent video "Minimalist motion explainer" --aspect-ratio 16:9 --resolution 1080p --out ./clip.mp4
 gemini-subagent open-app images
 gemini-subagent open-app videos
+gemini-subagent open-app students
+
+# Natural speech synthesis (gemini-3.8-flash-tts) & media transcription
+gemini-subagent tts "Hello from Gemini subagent." --out ./voice.wav
+gemini-subagent transcribe -f ./call.mp4 --format srt --out ./call.srt
+
+# NotebookLM / Gemini Notebook ($0 subscription infographic, slide deck & grounded Q&A)
+gemini-subagent notebook list
+gemini-subagent notebook infographic --new-title "Spec" -f ./spec.md --orientation portrait --style editorial --out ./card.png
+
+# Mount Gemini.app bundled official MCP binaries (Obsidian, Blender, Autodesk Fusion) + gemini-collab
+gemini-subagent mount-mcp --obsidian --blender --collab --dry-run
 ```
 
 ### Three Ways to Generate Gemini Images

@@ -4,12 +4,12 @@ description: >-
   Invoke Gemini as a fast headless subagent using Google Developer Program / AI Ultra
   monthly $40/$100 gemini-api credits (local file Q&A, independent Argon/Carbon code
   and git-diff review, background Deep Research, remote Linux sandbox, 2K/4K image
-  and knowledge-card generation, Omni 1.2 video generation), isolated `agy -p` Google
-  accounts, AND collaborate with macOS Gemini.app non-Antigravity desktop mode via
-  local-file mailbox handoffs, deeplinks (`images`, `videos`, `library`), and Custom
-  Local MCP. Activate when the user asks to delegate subtasks to Gemini credits,
-  generate knowledge-card infographics or videos with Gemini, run gemini-subagent,
-  have Gemini.app read/process local files, or run independent Gemini code review.
+  and knowledge-card generation, Omni 1.2 video, natural `gemini-3.8-flash-tts` speech,
+  `gemini-3.5-transcribe`), NotebookLM / Gemini Notebook automation (`list`/`ask`/
+  `infographic`/`studio`), isolated `agy -p` Google accounts, AND collaborate with
+  macOS Gemini.app non-Antigravity desktop mode via local-file mailbox handoffs,
+  deeplinks (`images`, `videos`, `library`, `students`), and bundled MCP servers
+  (`obsidian_mcp_server`, `blender_mcp_server`, `autodesk_mcp_server`, `gemini_collab_mcp.py`).
 ---
 
 # Gemini Subagent & Desktop Collaboration
@@ -83,16 +83,41 @@ gemini-subagent image "Change title font color to dark slate" --continue-id v1_.
 ### Video Generation (`video`) & Desktop Media Deeplinks (`open-app`)
 ```zsh
 gemini-subagent video "Clean flat vector motion explainer" --aspect-ratio 16:9 --resolution 1080p --out ./clip.mp4
-gemini-subagent open-app images   # Open Gemini.app native image studio (googlegemini://?target=images)
-gemini-subagent open-app videos   # Open Gemini.app native Veo video studio (googlegemini://?target=videos)
-gemini-subagent open-app library  # Open Gemini.app generated media library
+gemini-subagent open-app images    # Open Gemini.app native image studio (googlegemini://?target=images)
+gemini-subagent open-app videos    # Open Gemini.app native Veo video studio (googlegemini://?target=videos)
+gemini-subagent open-app library   # Open Gemini.app generated media library
+gemini-subagent open-app students  # Open Gemini.app Study Notebooks & quizzes
+```
+
+### Natural TTS (`tts`) & Transcription (`transcribe`)
+`gemini-3.8-flash-tts` works even on unbilled Free Tier API keys (`$0` 24kHz WAV); `transcribe` auto-uploads `> 14 MB` media:
+```zsh
+gemini-subagent tts "欢迎来到今天的技术分享。" --language zh-CN --out ./voice.wav
+gemini-subagent tts "Alice: Ready? Bob: Ship it." --multi-speaker "Alice=Kore,Bob=Puck" --out ./dialogue.wav
+gemini-subagent transcribe -f ./recording.mp4 --format srt --out ./subtitles.srt
+```
+
+### NotebookLM / Gemini Notebook Automation (`notebook`)
+Uses your Google AI Ultra / Pro subscription (`NOTEBOOKLM_HOME=~/.notebooklm`, synced live with `Gemini.app`'s sidebar Notebooks):
+```zsh
+gemini-subagent notebook list
+gemini-subagent notebook ask --new-title "Design Docs" -f ./spec.md "Summarize invariants"
+gemini-subagent notebook infographic --new-title "Tech Card" -f ./spec.md --orientation portrait --style editorial --language zh-CN --out ./card.png
+gemini-subagent notebook studio slide-deck -n <notebook_id> --language zh-CN --out ./deck.pdf
+```
+
+### Mount `Gemini.app`'s Bundled Official MCP Servers (`mount-mcp`)
+`Gemini.app` ships standalone stdio MCP binaries for **Obsidian** (15 tools), **Blender** (9 tools), and **Autodesk Fusion** (8 tools) under `/Applications/Gemini.app/Contents/Helpers/`:
+```zsh
+gemini-subagent mount-mcp --obsidian --blender --collab   # Merge into ~/.gemini/config/mcp_config.json
+gemini-subagent mount-mcp --all --config ~/.claude.json --dry-run
 ```
 
 ---
 
 ## 3. Routing: `gemini-api` / `agy` Headless vs `Gemini.app` Non-Antigravity Desktop
 
-- **Route to `gemini-subagent ask / review / research / sandbox / image / video / agy-ask`** when you need fast, scriptable, non-interactive execution on source files, diffs, PDFs/media, batch knowledge-card generation, web Deep Research, or isolated Linux compute.
+- **Route to `gemini-subagent ask / review / research / sandbox / image / video / tts / transcribe / notebook / agy-ask`** when you need fast, scriptable, non-interactive execution on source files, diffs, PDFs/media, speech/captions, NotebookLM infographics/decks, web Deep Research, or isolated Linux compute.
 - **Route to `Gemini.app` non-Antigravity mode (`handoff` / `collect` / `open-app`)** when the task needs capabilities unique to the native macOS Gemini app:
   1. Reading/editing local user folders (`~/Downloads`, `~/Documents`, `~/Desktop`) alongside personal context (`DesktopTools` Python/file tools, Google Drive tools);
   2. Native macOS **Computer Use + AppleScript** (Calendar, Reminders, Finder, native macOS UI actions, PDF form repair);
