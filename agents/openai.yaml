@@ -1,0 +1,6 @@
+interface:
+  display_name: "Gemini 赠金子智能体与桌面协同"
+  short_description: "封装 gemini-api 每月 $40/$100 赠金与 agy -p 独立账号为快速子智能体，并打通 Gemini.app 本地文件信箱与 MCP 协同。"
+  default_prompt: "使用 $gemini-subagent（gemini-subagent CLI）调用 Gemini 赠金子智能体执行文件问答、独立代码评审、深度研究、agy -p 多账号调用或向 Gemini.app 派发本地协同任务。"
+policy:
+  allow_implicit_invocation: true
